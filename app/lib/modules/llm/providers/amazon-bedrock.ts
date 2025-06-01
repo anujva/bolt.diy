@@ -6,8 +6,8 @@ import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 
 interface AWSBedRockConfig {
   region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
   sessionToken?: string;
 }
 
@@ -21,26 +21,32 @@ export default class AmazonBedrockProvider extends BaseProvider {
 
   staticModels: ModelInfo[] = [
     {
-      name: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      name: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
+      label: 'Claude 4 Sonnet (Bedrock)',
+      provider: 'AmazonBedrock',
+      maxTokenAllowed: 200000,
+    },
+    {
+      name: 'us.anthropic.claude-opus-4-20250514-v1:0',
+      label: 'Claude 4 Opus (Bedrock)',
+      provider: 'AmazonBedrock',
+      maxTokenAllowed: 200000,
+    },
+    {
+      name: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
+      label: 'Claude 3.7 Sonnet v1 (Bedrock)',
+      provider: 'AmazonBedrock',
+      maxTokenAllowed: 200000,
+    },
+    {
+      name: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
       label: 'Claude 3.5 Sonnet v2 (Bedrock)',
       provider: 'AmazonBedrock',
       maxTokenAllowed: 200000,
     },
     {
-      name: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
+      name: 'us.anthropic.claude-3-5-sonnet-20240620-v1:0',
       label: 'Claude 3.5 Sonnet (Bedrock)',
-      provider: 'AmazonBedrock',
-      maxTokenAllowed: 4096,
-    },
-    {
-      name: 'anthropic.claude-3-sonnet-20240229-v1:0',
-      label: 'Claude 3 Sonnet (Bedrock)',
-      provider: 'AmazonBedrock',
-      maxTokenAllowed: 4096,
-    },
-    {
-      name: 'anthropic.claude-3-haiku-20240307-v1:0',
-      label: 'Claude 3 Haiku (Bedrock)',
       provider: 'AmazonBedrock',
       maxTokenAllowed: 4096,
     },
@@ -64,29 +70,43 @@ export default class AmazonBedrockProvider extends BaseProvider {
     },
   ];
 
-  private _parseAndValidateConfig(apiKey: string): AWSBedRockConfig {
+  private _isAWSEnvironment(): boolean {
+    return !!(
+      process.env.AWS_EXECUTION_ENV ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME ||
+      process.env.ECS_CONTAINER_METADATA_URI ||
+      process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
+      process.env.AWS_EC2_METADATA_TOKEN
+    );
+  }
+
+  private _parseAndValidateConfig(apiKey: string, allowMissingCredentials = false): AWSBedRockConfig {
     let parsedConfig: AWSBedRockConfig;
 
     try {
       parsedConfig = JSON.parse(apiKey);
     } catch {
       throw new Error(
-        'Invalid AWS Bedrock configuration format. Please provide a valid JSON string containing region, accessKeyId, and secretAccessKey.',
+        'Invalid AWS Bedrock configuration format. Please provide a valid JSON string containing region and optionally accessKeyId and secretAccessKey.',
       );
     }
 
     const { region, accessKeyId, secretAccessKey, sessionToken } = parsedConfig;
 
-    if (!region || !accessKeyId || !secretAccessKey) {
+    if (!region) {
+      throw new Error('Missing required region in AWS Bedrock configuration.');
+    }
+
+    if (!allowMissingCredentials && (!accessKeyId || !secretAccessKey)) {
       throw new Error(
-        'Missing required AWS credentials. Configuration must include region, accessKeyId, and secretAccessKey.',
+        'Missing required AWS credentials. Configuration must include accessKeyId and secretAccessKey when not running in AWS environment.',
       );
     }
 
     return {
       region,
-      accessKeyId,
-      secretAccessKey,
+      ...(accessKeyId && { accessKeyId }),
+      ...(secretAccessKey && { secretAccessKey }),
       ...(sessionToken && { sessionToken }),
     };
   }
@@ -98,6 +118,7 @@ export default class AmazonBedrockProvider extends BaseProvider {
     providerSettings?: Record<string, IProviderSetting>;
   }): LanguageModelV1 {
     const { model, serverEnv, apiKeys, providerSettings } = options;
+    const isAWSEnv = this._isAWSEnvironment();
 
     const { apiKey } = this.getProviderBaseUrlAndKey({
       apiKeys,
@@ -107,11 +128,25 @@ export default class AmazonBedrockProvider extends BaseProvider {
       defaultApiTokenKey: 'AWS_BEDROCK_CONFIG',
     });
 
-    if (!apiKey) {
-      throw new Error(`Missing API key for ${this.name} provider`);
+    let config: AWSBedRockConfig;
+
+    if (isAWSEnv && !apiKey) {
+      // Use IAM role with default region or from environment
+      config = {
+        region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
+      };
+    } else if (isAWSEnv && apiKey) {
+      // Parse config but allow missing credentials since we're in AWS environment
+      config = this._parseAndValidateConfig(apiKey, true);
+    } else if (!isAWSEnv && apiKey) {
+      // Require explicit credentials when not in AWS environment
+      config = this._parseAndValidateConfig(apiKey, false);
+    } else {
+      throw new Error(
+        `Missing AWS Bedrock configuration. Please provide AWS_BEDROCK_CONFIG with region and credentials, or deploy to AWS environment with IAM role.`,
+      );
     }
 
-    const config = this._parseAndValidateConfig(apiKey);
     const bedrock = createAmazonBedrock(config);
 
     return bedrock(model);
