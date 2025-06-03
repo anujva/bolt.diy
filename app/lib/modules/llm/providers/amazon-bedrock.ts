@@ -6,9 +6,11 @@ import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 
 interface AWSBedRockConfig {
   region: string;
-  accessKeyId?: string;
-  secretAccessKey?: string;
-  sessionToken?: string;
+
+  /*
+   * Credentials will be resolved automatically via credential chain
+   * No need to explicitly pass accessKeyId, secretAccessKey, sessionToken
+   */
 }
 
 export default class AmazonBedrockProvider extends BaseProvider {
@@ -80,35 +82,21 @@ export default class AmazonBedrockProvider extends BaseProvider {
     );
   }
 
-  private _parseAndValidateConfig(apiKey: string, allowMissingCredentials = false): AWSBedRockConfig {
-    let parsedConfig: AWSBedRockConfig;
+  private _getRegionFromConfig(apiKey?: string): string {
+    if (apiKey) {
+      try {
+        const parsedConfig = JSON.parse(apiKey);
 
-    try {
-      parsedConfig = JSON.parse(apiKey);
-    } catch {
-      throw new Error(
-        'Invalid AWS Bedrock configuration format. Please provide a valid JSON string containing region and optionally accessKeyId and secretAccessKey.',
-      );
+        if (parsedConfig.region) {
+          return parsedConfig.region;
+        }
+      } catch {
+        // If parsing fails, fall back to environment variables
+      }
     }
 
-    const { region, accessKeyId, secretAccessKey, sessionToken } = parsedConfig;
-
-    if (!region) {
-      throw new Error('Missing required region in AWS Bedrock configuration.');
-    }
-
-    if (!allowMissingCredentials && (!accessKeyId || !secretAccessKey)) {
-      throw new Error(
-        'Missing required AWS credentials. Configuration must include accessKeyId and secretAccessKey when not running in AWS environment.',
-      );
-    }
-
-    return {
-      region,
-      ...(accessKeyId && { accessKeyId }),
-      ...(secretAccessKey && { secretAccessKey }),
-      ...(sessionToken && { sessionToken }),
-    };
+    // Use region from environment variables or default
+    return process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
   }
 
   getModelInstance(options: {
@@ -118,7 +106,6 @@ export default class AmazonBedrockProvider extends BaseProvider {
     providerSettings?: Record<string, IProviderSetting>;
   }): LanguageModelV1 {
     const { model, serverEnv, apiKeys, providerSettings } = options;
-    const isAWSEnv = this._isAWSEnvironment();
 
     const { apiKey } = this.getProviderBaseUrlAndKey({
       apiKeys,
@@ -128,24 +115,20 @@ export default class AmazonBedrockProvider extends BaseProvider {
       defaultApiTokenKey: 'AWS_BEDROCK_CONFIG',
     });
 
-    let config: AWSBedRockConfig;
+    // Get region from config or environment variables
+    const region = this._getRegionFromConfig(apiKey);
 
-    if (isAWSEnv && !apiKey) {
-      // Use IAM role with default region or from environment
-      config = {
-        region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
-      };
-    } else if (isAWSEnv && apiKey) {
-      // Parse config but allow missing credentials since we're in AWS environment
-      config = this._parseAndValidateConfig(apiKey, true);
-    } else if (!isAWSEnv && apiKey) {
-      // Require explicit credentials when not in AWS environment
-      config = this._parseAndValidateConfig(apiKey, false);
-    } else {
-      throw new Error(
-        `Missing AWS Bedrock configuration. Please provide AWS_BEDROCK_CONFIG with region and credentials, or deploy to AWS environment with IAM role.`,
-      );
-    }
+    /*
+     * Use credential chain - AWS SDK will automatically resolve credentials from:
+     * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+     * 2. Shared credentials file (~/.aws/credentials)
+     * 3. IAM roles for EC2 instances
+     * 4. IAM roles for ECS tasks
+     * 5. IAM roles for Lambda functions
+     */
+    const config: AWSBedRockConfig = {
+      region,
+    };
 
     const bedrock = createAmazonBedrock(config);
 
