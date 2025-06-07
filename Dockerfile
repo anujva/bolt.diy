@@ -17,6 +17,8 @@ COPY . .
 # Production image
 FROM base AS bolt-ai-production
 
+RUN apt update && apt install -y awscli
+
 # Define environment variables with default values or let them be overridden
 ARG GROQ_API_KEY
 ARG HuggingFace_API_KEY
